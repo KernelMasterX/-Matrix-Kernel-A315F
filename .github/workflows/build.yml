@@ -30,18 +30,11 @@ jobs:
           sudo apt-get install -f -y
           sudo apt-get install -y bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-arm-linux-gnueabi gcc-arm-linux-gnueabi git libncurses5-dev libssl-dev libelf-dev zlib1g-dev cpio
 
-      - name: Setup KernelSU-Next Clean Integration
+      - name: Setup KernelSU-Next Official Way
         run: |
-          rm -rf drivers/kernelsu
-          git clone https://github.com/KernelSU-Next/KernelSU-Next.git drivers/kernelsu
-          
-          # Kconfig ve Makefile entegrasyon kontrolü
-          if ! grep -q "kernelsu" drivers/Kconfig; then
-            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          fi
-          if ! grep -q "kernelsu" drivers/Makefile; then
-            echo 'obj-y += kernelsu/' >> drivers/Makefile
-          fi
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s main || \
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/master/kernel/setup.sh" | bash -s master || \
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
 
       - name: Build Kernel
         run: |
