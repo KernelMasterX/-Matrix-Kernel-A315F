@@ -46,14 +46,6 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
           
           make a31_defconfig
-          
-          # KernelSU ve Kprobes yapilandirmalarini zorunlu olarak aktiflestirelim
-          echo "CONFIG_KSU=y" >> .config
-          echo "CONFIG_KPROBES=y" >> .config
-          echo "CONFIG_HAVE_KPROBES=y" >> .config
-          echo "CONFIG_KPROBE_EVENTS=y" >> .config
-          
-          make olddefconfig
           make -j$(nproc) Image
 
       - name: Package Kernel with AnyKernel3
