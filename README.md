@@ -7,7 +7,7 @@
 [![Device](https://img.shields.io/badge/Device-Galaxy_A31-red?style=for-the-badge)](https://github.com/KernelMasterX/A315f-kernelSU_next)
 
 ### Base Source
-- **physwizz/A315f-S-s5** - S Series Port
+- **physwizz/A315f-S-s5**
 - Linux 4.14.xxx - OneUI 4.1 Compatible
 
 ### Features
