@@ -25,7 +25,9 @@ jobs:
 
       - name: Install Dependencies & Toolchain
         run: |
+          sudo dpkg --configure -a
           sudo apt-get update
+          sudo apt-get install -f -y
           sudo apt-get install -y bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-arm-linux-gnueabi gcc-arm-linux-gnueabi git libncurses5-dev libssl-dev libelf-dev zlib1g-dev cpio
 
       - name: Setup KernelSU-Next Clean Integration
