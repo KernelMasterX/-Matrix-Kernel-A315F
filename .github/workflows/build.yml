@@ -23,14 +23,23 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Dependencies & Modern Toolchain
+      - name: Install Dependencies & Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-arm-linux-gnueabi gcc-arm-linux-gnueabi git libncurses5-dev libssl-dev libelf-dev zlib1g-dev cpio
 
-      - name: Setup KernelSU Next
+      - name: Setup KernelSU-Next Clean Integration
         run: |
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          rm -rf drivers/kernelsu
+          git clone https://github.com/KernelSU-Next/KernelSU-Next.git drivers/kernelsu
+          
+          # Kconfig ve Makefile entegrasyon kontrolü
+          if ! grep -q "kernelsu" drivers/Kconfig; then
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          fi
+          if ! grep -q "kernelsu" drivers/Makefile; then
+            echo 'obj-y += kernelsu/' >> drivers/Makefile
+          fi
 
       - name: Build Kernel
         run: |
@@ -38,7 +47,9 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export KCFLAGS="-I$PWD/drivers/devfreq -I$PWD/drivers/misc/mediatek/include -D'syscall_fn_t=void *' -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration"
+          
+          # 4.14 Çekirdek ve Modern GCC Uyumluluk Bayrakları
+          export KCFLAGS="-I$PWD/drivers/devfreq -I$PWD/drivers/misc/mediatek/include -D'syscall_fn_t=void *' -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
           
           make a31_defconfig
           make -j$(nproc) Image
