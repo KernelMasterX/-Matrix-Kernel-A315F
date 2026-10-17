@@ -1,6 +1,6 @@
 # A315F KernelSU Next | by KernelMasterX
 
-> Custom Kernel for Samsung Galaxy A31 (SM-A315F) - S5 Based with KernelSU Next Integrated
+> Custom Kernel for Samsung Galaxy A31 (SM-A315F) - with KernelSU Next Integrated
 
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge)](https://github.com/KernelMasterX/A315f-kernelSU_next/actions)
 [![KSU](https://img.shields.io/badge/KernelSU-Next-blue?style=for-the-badge)](https://github.com/KernelSU-Next/KernelSU-Next)
