@@ -23,27 +23,22 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Install Dependencies & Modern Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu git libncurses5-dev libssl-dev libelf-dev zlib1g-dev
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-arm-linux-gnueabi gcc-arm-linux-gnueabi git libncurses5-dev libssl-dev libelf-dev zlib1g-dev
 
       - name: Setup KernelSU Next
         run: |
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
 
-      - name: Clone Toolchain
-        run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain-gcc
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git toolchain-gcc32
-
       - name: Build Kernel
         run: |
-          export PATH=$PWD/toolchain-gcc/bin:$PWD/toolchain-gcc32/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export KCFLAGS="-I$PWD/drivers/devfreq -I$PWD/drivers/misc/mediatek/include"
           
           make a31_defconfig
           make -j$(nproc) Image
