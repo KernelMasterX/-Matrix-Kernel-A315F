@@ -63,13 +63,13 @@ jobs:
       - name: Integrate KernelSU-Next
         run: |
           rm -rf drivers/kernelsu
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          # Protokol 5 / eski legacy kararlı sürüm etiketine sabitlendi
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.3.0
 
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
 
           BR=$(git -C KernelSU-Next rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
-          echo "KernelSU-Next dali: $BR"
-          [ "$BR" = "legacy" ] || { echo "::error::legacy dali alinamadi (HEAD=$BR)"; exit 1; }
+          echo "KernelSU-Next surum/dal: $BR"
           git -C KernelSU-Next log -1 --oneline
           ls drivers/kernelsu drivers/kernelsu/hook
 
