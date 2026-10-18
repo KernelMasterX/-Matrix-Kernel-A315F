@@ -13,6 +13,8 @@ env:
   CROSS_COMPILE: /opt/a64/bin/aarch64-linux-gnu-
   CROSS_COMPILE_ARM32: arm-linux-gnueabi-
   DEFCONFIG: a31_defconfig
+  # Repo'nun kendi araci (Samsung/MTK kodu bununla ayarli). Ubuntu clang'i (14+) DWARF5 uretip uyari seli yapiyor.
+  CLANG_BIN: ${{ github.workspace }}/toolchain/clang/host/linux-x86/clang-r383902/bin/clang
 
 jobs:
   build:
@@ -40,8 +42,7 @@ jobs:
           sudo apt-get install -y bc bison build-essential curl flex git zip cpio \
             libncurses5-dev libssl-dev libelf-dev zlib1g-dev lz4 xz-utils python3 \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
-            clang lld llvm
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
 
           # Makefile clang'a --prefix=$(dirname $(which $(CROSS_COMPILE)elfedit)) veriyor ve
           # -no-integrated-as zorluyor. Ubuntu'da bu /usr/bin oluyor, yani clang x86 'as' calistirip
@@ -97,8 +98,10 @@ jobs:
 
       - name: Configure Kernel
         run: |
+          test -x "$CLANG_BIN" || { echo "::error::Repo clang bulunamadi: $CLANG_BIN"; ls toolchain 2>&1 | head; exit 1; }
+          "$CLANG_BIN" --version | head -1
           test -f "arch/arm64/configs/$DEFCONFIG" || { echo "::error::$DEFCONFIG bulunamadi"; ls arch/arm64/configs | head -50; exit 1; }
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE "$DEFCONFIG"
+          make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE "$DEFCONFIG"
 
           C="scripts/config --file out/.config"
           # Samsung korumalari KernelSU ile derlenmez (#error veriyor)
@@ -113,7 +116,8 @@ jobs:
           $C --enable CONFIG_OVERLAY_FS
           $C --disable CONFIG_WERROR
           $C --disable CONFIG_IKHEADERS
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE olddefconfig
+          $C --disable CONFIG_DEBUG_INFO
+          make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE olddefconfig
 
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_HAVE_KPROBES|CONFIG_KPROBE_EVENTS" out/.config
           if grep -qE "^CONFIG_(UH|KDP|RKP)=y" out/.config; then
@@ -125,15 +129,17 @@ jobs:
       - name: Build Kernel
         run: |
           export KCFLAGS="-w"
-          MK="make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          MK="make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
           IMG=out/arch/arm64/boot/Image
           CPATH_LIST=""
 
           for round in 1 2 3 4; do
             echo "===== Tur $round ====="
             set +e
-            CPATH="${CPATH_LIST#:}" $MK -k -j"$(nproc)" Image 2>&1 | tee "build-$round.log"
+            CPATH="${CPATH_LIST#:}" $MK -k -j"$(nproc)" Image 2>&1 \
+              | awk '/Unrecognized form/ { next } { print }' > "build-$round.log"
             set -e
+            tail -n 25 "build-$round.log" | cut -c1-250
             [ -f "$IMG" ] && break
 
             # Eksik header'lari agacta bul, CPATH ile ekle (komut satiri degismez, tam rebuild olmaz)
@@ -153,11 +159,13 @@ jobs:
             done < missing.txt
             [ "$new" = 1 ] || break
           done
-          cat build-*.log > build.log
+          cat build-*.log | gzip -9 > build.log.gz
 
           if [ ! -f "$IMG" ]; then
-            echo "::error::Image uretilemedi. Kalan hatalar:"
-            grep -hE "error:|fatal error" build-*.log | sort | uniq -c | sort -rn | head -n 40
+            echo "::error::Image uretilemedi."
+            echo "--- ilk hatalar (benzersiz) ---"
+            grep -hE "\*\*\* |undefined reference|ld: |: error|fatal error|No rule to make|No such file" build-*.log \
+              | sed -E 's#/home/runner/work/[^/]+/[^/]+/##' | awk '!seen[$0]++' | head -n 40 | cut -c1-250
             exit 1
           fi
           ls -lh "$IMG"
@@ -192,5 +200,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: build.log.gz
           if-no-files-found: ignore
