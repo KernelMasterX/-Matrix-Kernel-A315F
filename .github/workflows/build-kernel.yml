@@ -44,11 +44,6 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
 
-          # Makefile clang'a --prefix=$(dirname $(which $(CROSS_COMPILE)elfedit)) veriyor ve
-          # -no-integrated-as zorluyor. Ubuntu'da bu /usr/bin oluyor, yani clang x86 'as' calistirip
-          # "unrecognized option -EL" hatasi aliyor. Cozum: aarch64 binutils'i ayri bir klasore
-          # hem prefix'li hem prefix'siz adlarla koy ve CROSS_COMPILE'i mutlak yol yap.
-          # (PATH'e eklenmiyor, boylece host gcc etkilenmez.)
           sudo mkdir -p /opt/a64/bin
           for t in as ld ld.bfd ld.gold ar nm strip objcopy objdump readelf elfedit ranlib gcc cpp; do
             src="$(command -v aarch64-linux-gnu-$t || true)"
@@ -60,7 +55,6 @@ jobs:
 
       - name: Fix old-kernel vs modern host toolchain
         run: |
-          # GCC 10+ ile 4.14 dtc: "multiple definition of yylloc" hatasi
           for f in scripts/dtc/dtc-lexer.lex.c_shipped scripts/dtc/dtc-lexer.lex.c; do
             [ -f "$f" ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' "$f"
           done
@@ -69,7 +63,6 @@ jobs:
       - name: Integrate KernelSU-Next
         run: |
           rm -rf drivers/kernelsu
-          # 4.14 icin 'legacy' dali sart. 'next'/'dev' dallari GKI (5.10+) icindir.
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
@@ -87,12 +80,10 @@ jobs:
 
       - name: Patch KernelSU-Next for 4.14
         run: |
-          # KSYM_NAME_LEN icin kallsyms.h eksik (supercall/dispatch.c)
           D=drivers/kernelsu/supercall/dispatch.c
           if [ -f "$D" ] && ! grep -q "linux/kallsyms.h" "$D"; then
             sed -i '0,/^#include/s//#include <linux\/kallsyms.h>\n#include/' "$D"
           fi
-          # 4.14'te linux/pgtable.h yok
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | xargs -r sed -i 's|<linux/pgtable.h>|<asm/pgtable.h>|g'
           grep -n "kallsyms.h" "$D" || true
 
@@ -104,7 +95,6 @@ jobs:
           make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE "$DEFCONFIG"
 
           C="scripts/config --file out/.config"
-          # Samsung korumalari KernelSU ile derlenmez (#error veriyor)
           for o in UH UH_RKP UH_LKMAUTH RKP RKP_CFP RKP_CFP_JOPP RKP_KDP RKP_NS KDP KDP_CRED KDP_NS KDP_TEST SECURITY_DEFEX; do
             $C --disable CONFIG_$o
           done
@@ -126,6 +116,15 @@ jobs:
             exit 1
           fi
 
+      - name: Prime KernelSU backports
+        run: |
+          MKP="make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE"
+          $MKP prepare > prime.log 2>&1 || true
+          $MKP drivers/kernelsu/ >> prime.log 2>&1 || true
+          grep -E "KSU_NEXT|KernelSU-Next" prime.log | head -20 || true
+          grep -q "^int path_umount" fs/namespace.c || { echo "::error::path_umount fs/namespace.c'ye eklenemedi"; tail -n 30 prime.log; exit 1; }
+          echo "path_umount yamasi tamam"
+
       - name: Build Kernel
         run: |
           export KCFLAGS="-w"
@@ -142,7 +141,6 @@ jobs:
             tail -n 25 "build-$round.log" | cut -c1-250
             [ -f "$IMG" ] && break
 
-            # Eksik header'lari agacta bul, CPATH ile ekle (komut satiri degismez, tam rebuild olmaz)
             grep -ohE "'[^']+\.h' file not found" "build-$round.log" | sed -E "s/^'(.*)' file not found/\1/" | sort -u > missing.txt
             [ -s missing.txt ] || break
             new=0
