@@ -34,18 +34,20 @@ jobs:
           sudo mkdir -p /tools/build
           sudo ln -sf /usr/bin/cpio /tools/build/cpio || true
 
-      - name: Setup KernelSU-Next for 4.14 (Legacy Branch)
+      - name: Setup KernelSU-Next (v0.9.5 - Stable 4.14 Non-GKI)
         run: |
           rm -rf drivers/kernelsu
-          # 4.14 / Non-GKI çekirdekler için pgtable.h gerektirmeyen legacy şubesi
-          git clone https://github.com/KernelSU-Next/KernelSU-Next.git -b legacy drivers/kernelsu || git clone https://github.com/KernelSU-Next/KernelSU-Next.git drivers/kernelsu
+          # 4.14 ve eski linux çekirdekleriyle uyumlu v0.9.5 tag'ini klonluyoruz
+          git clone https://github.com/KernelSU-Next/KernelSU-Next.git drivers/kernelsu
+          cd drivers/kernelsu
+          git checkout v0.9.5 || git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
+          cd ../..
           
-          if ! grep -q "kernelsu" drivers/Kconfig; then
-            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          fi
-          if ! grep -q "kernelsu" drivers/Makefile; then
-            echo 'obj-y += kernelsu/' >> drivers/Makefile
-          fi
+          # Kconfig ve Makefile çakışmalarını önleyerek ekleme
+          sed -i '/kernelsu/d' drivers/Kconfig
+          sed -i '/kernelsu/d' drivers/Makefile
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          echo 'obj-y += kernelsu/' >> drivers/Makefile
 
       - name: Build Kernel
         run: |
