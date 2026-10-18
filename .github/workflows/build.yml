@@ -34,20 +34,12 @@ jobs:
           sudo mkdir -p /tools/build
           sudo ln -sf /usr/bin/cpio /tools/build/cpio || true
 
-      - name: Setup KernelSU-Next (v0.9.5 - Stable 4.14 Non-GKI)
+      - name: Setup KernelSU-Next Official Way
         run: |
           rm -rf drivers/kernelsu
-          # 4.14 ve eski linux çekirdekleriyle uyumlu v0.9.5 tag'ini klonluyoruz
-          git clone https://github.com/KernelSU-Next/KernelSU-Next.git drivers/kernelsu
-          cd drivers/kernelsu
-          git checkout v0.9.5 || git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
-          cd ../..
-          
-          # Kconfig ve Makefile çakışmalarını önleyerek ekleme
-          sed -i '/kernelsu/d' drivers/Kconfig
-          sed -i '/kernelsu/d' drivers/Makefile
-          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          echo 'obj-y += kernelsu/' >> drivers/Makefile
+          # Resmi setup betiği ile en güncel KernelSU-Next entegrasyonunu otomatik yapıyoruz
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next || \
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s main
 
       - name: Build Kernel
         run: |
