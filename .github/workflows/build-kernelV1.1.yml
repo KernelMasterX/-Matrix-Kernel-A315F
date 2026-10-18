@@ -13,7 +13,6 @@ env:
   CROSS_COMPILE: /opt/a64/bin/aarch64-linux-gnu-
   CROSS_COMPILE_ARM32: arm-linux-gnueabi-
   DEFCONFIG: a31_defconfig
-  # Repo'nun kendi araci (Samsung/MTK kodu bununla ayarli). Ubuntu clang'i (14+) DWARF5 uretip uyari seli yapiyor.
   CLANG_BIN: ${{ github.workspace }}/toolchain/clang/host/linux-x86/clang-r383902/bin/clang
 
 jobs:
@@ -85,11 +84,16 @@ jobs:
           grep -q 'kernelsu' drivers/Makefile \
             || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 
+          # kperfmon çakışmasını engellemek için devre dışı bırakıyoruz
+          rm -rf drivers/kperfmon || true
+          find drivers -name "*kperfmon*" -exec rm -rf {} + || true
+
       - name: Patch KernelSU-Next for 4.14 (Python Engine)
         run: |
           python3 -c '
           import os
 
+          # 1. Dispatch.c kallsyms eklemesi
           d_path = "drivers/kernelsu/supercall/dispatch.c"
           if os.path.exists(d_path):
               with open(d_path, "r") as f:
@@ -99,6 +103,7 @@ jobs:
                   with open(d_path, "w") as f:
                       f.write(content)
 
+          # 2. pgtable düzeltmesi
           for root, dirs, files in os.walk("drivers/kernelsu"):
               for file in files:
                   if file.endswith((".c", ".h")):
@@ -110,6 +115,7 @@ jobs:
                           with open(fp, "w") as f:
                               f.write(c)
 
+          # 3. file_wrapper.c düzeltmeleri
           fw_path = "drivers/kernelsu/infra/file_wrapper.c"
           if os.path.exists(fw_path):
               with open(fw_path, "r") as f:
@@ -125,6 +131,7 @@ jobs:
               with open(fw_path, "w") as f:
                   f.write(c)
 
+          # 4. event_queue.h düzeltmesi
           eqh_path = "drivers/kernelsu/infra/event_queue.h"
           if os.path.exists(eqh_path):
               with open(eqh_path, "r") as f:
@@ -135,6 +142,7 @@ jobs:
                   with open(eqh_path, "w") as f:
                       f.write(c)
 
+          # 5. syscall_hook.h düzeltmesi
           sh_path = "drivers/kernelsu/hook/syscall_hook.h"
           if os.path.exists(sh_path):
               with open(sh_path, "r") as f:
@@ -143,6 +151,21 @@ jobs:
               new_lines.insert(0, "typedef long (*syscall_fn_t)(const struct pt_regs *);\n")
               with open(sh_path, "w") as f:
                   f.writelines(new_lines)
+
+          # 6. sulog.h içindeki void değişken hatasını düzelt
+          sulog_path = "drivers/kernelsu/feature/sulog.h"
+          if os.path.exists(sulog_path):
+              with open(sulog_path, "w") as f:
+                  f.write("#ifndef __KSU_SULOG_H__\n#define __KSU_SULOG_H__\n#include <linux/types.h>\nvoid ksu_su_log(void);\n#endif\n")
+
+          # 7. lsm_hook.c içindeki pprev/first list_head uyumsuzluğunu düzelt (.pprev -> .prev)
+          lsm_path = "drivers/kernelsu/hook/lsm_hook.c"
+          if os.path.exists(lsm_path):
+              with open(lsm_path, "r") as f:
+                  lsm_c = f.read()
+              lsm_c = lsm_c.replace("->pprev", "->prev").replace(".pprev", ".prev")
+              with open(lsm_path, "w") as f:
+                  f.write(lsm_c)
 
           print("Python tabanlı KernelSU v3.3.0 4.14 yamaları başarıyla uygulandı.")
           '
