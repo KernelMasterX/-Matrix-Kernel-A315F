@@ -85,18 +85,28 @@ jobs:
           fi
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | xargs -r sed -i 's|<linux/pgtable.h>|<asm/pgtable.h>|g'
 
-          # __poll_t eksikligi icin 4.14 uyumlu typedef ekleyelim
+          # 1. file_wrapper.c icindeki 4.14 te olmayan struct file_operations alanlarini bypass edelim
           FW="drivers/kernelsu/infra/file_wrapper.c"
-          if [ -f "$FW" ] && ! grep -q "__poll_t" "$FW"; then
-            sed -i '1i typedef unsigned int __poll_t;' "$FW"
+          if [ -f "$FW" ]; then
+            if ! grep -q "__poll_t" "$FW"; then
+              sed -i '1i typedef unsigned int __poll_t;' "$FW"
+            fi
+            if ! grep -q "REMAP_FILE_DEDUP" "$FW"; then
+              sed -i '/#include/a #ifndef REMAP_FILE_DEDUP\n#define REMAP_FILE_DEDUP 0\n#endif' "$FW"
+            fi
+            sed -i 's/\.mmap_supported_flags[[:space:]]*=.*,//* .mmap_supported_flags bypassed */' "$FW"
+            sed -i 's/\.remap_file_range[[:space:]]*=.*,//* .remap_file_range bypassed */' "$FW"
+            sed -i 's/\.fadvise[[:space:]]*=.*,//* .fadvise bypassed */' "$FW"
+            sed -i 's/\.iopoll[[:space:]]*=.*,//* .iopoll bypassed */' "$FW"
           fi
 
-          # REMAP_FILE_DEDUP eksikligi icin guvenli macro ekleyelim
-          if [ -f "$FW" ] && ! grep -q "REMAP_FILE_DEDUP" "$FW"; then
-            sed -i '/#include/a #ifndef REMAP_FILE_DEDUP\n#define REMAP_FILE_DEDUP 0\n#endif' "$FW"
+          # 2. event_queue.h icindeki __poll_t ve EPOLL tanimlarini guvenceye alalim
+          EQH="drivers/kernelsu/infra/event_queue.h"
+          if [ -f "$EQH" ] && ! grep -q "__poll_t" "$EQH"; then
+            sed -i '1i #include <linux/types.h>\ntypedef unsigned int __poll_t;\n#ifndef EPOLLIN\n#define EPOLLIN 0x0001\n#define EPOLLRDNORM 0x0040\n#define EPOLLHUP 0x0010\n#endif' "$EQH"
           fi
 
-          # syscall_fn_t tanimini v3.3.0 arm64 mimarisine gore duzeltelim
+          # 3. syscall_hook.h icindeki syscall_fn_t tanimini v3.3.0 arm64 mimarisine gore duzeltelim
           SH="drivers/kernelsu/hook/syscall_hook.h"
           if [ -f "$SH" ]; then
             sed -i '/typedef.*syscall_fn_t/d' "$SH"
