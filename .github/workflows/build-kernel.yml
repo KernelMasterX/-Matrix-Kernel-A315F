@@ -1,1 +1,171 @@
+name: Build Kernel
 
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  CROSS_COMPILE: aarch64-linux-gnu-
+  CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+  DEFCONFIG: a31_defconfig
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential curl flex git zip cpio \
+            libncurses5-dev libssl-dev libelf-dev zlib1g-dev lz4 xz-utils python3 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+
+      - name: Fix old-kernel vs modern host toolchain
+        run: |
+          # GCC 10+ ile 4.14 dtc: "multiple definition of yylloc" hatasi
+          for f in scripts/dtc/dtc-lexer.lex.c_shipped scripts/dtc/dtc-lexer.lex.c; do
+            [ -f "$f" ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' "$f"
+          done
+          exit 0
+
+      - name: Integrate KernelSU-Next
+        run: |
+          rm -rf drivers/kernelsu
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next \
+            || curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+
+          test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
+
+          # setup.sh normalde bunlari kendisi ekler; eksikse biz ekleriz
+          grep -q 'kernelsu/Kconfig' drivers/Kconfig \
+            || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'kernelsu' drivers/Makefile \
+            || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+      - name: Patch KernelSU-Next for 4.14
+        run: |
+          F=drivers/kernelsu/feature/sucompat.c
+          if [ -f "$F" ]; then
+            # 4.14'te linux/pgtable.h yok, asm/pgtable.h var
+            sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$F"
+
+            # void* tablo -> fonksiyon pointer cast (regex genel, idempotent)
+            sed -i 's/ksu_syscall_table\[\([^]]*\)\](/((long (*)(const struct pt_regs *))ksu_syscall_table[\1])(/g' "$F"
+          fi
+          grep -rn "linux/pgtable.h" drivers/kernelsu/ || echo "pgtable.h referansi kalmadi"
+          grep -n "ksu_syscall_table" "$F" || true
+
+      - name: Prepare missing MediaTek headers
+        run: |
+          mkdir -p drivers/misc/mediatek/video/mt6768/dispsys drivers/misc/mediatek/video/mt6768/videox \
+                   drivers/misc/mediatek/video/common/layering_rule_base/v1.1
+
+          # Gercek dosya baska yerde varsa dummy olusturma, yolunu include'a ekle
+          EXTRA_INC=""
+          for pair in "ddp_info.h:dispsys" "disp_lcm.h:videox"; do
+            h="${pair%%:*}"; d="${pair##*:}"
+            found=$(find drivers/misc/mediatek -name "$h" -size +0 -print -quit)
+            if [ -n "$found" ]; then
+              echo "Gercek $h bulundu: $found"
+              EXTRA_INC="$EXTRA_INC -I$PWD/$(dirname "$found")"
+            else
+              echo "$h yok, dummy olusturuluyor"
+              touch "drivers/misc/mediatek/video/mt6768/$d/$h"
+            fi
+          done
+
+          for d in drivers/devfreq \
+                   drivers/misc/mediatek/include \
+                   drivers/misc/mediatek/video/mt6768/videox \
+                   drivers/misc/mediatek/video/mt6768/dispsys \
+                   drivers/misc/mediatek/video/common/layering_rule_base/v1.1; do
+            [ -d "$d" ] && EXTRA_INC="$EXTRA_INC -I$PWD/$d"
+          done
+          echo "EXTRA_INC=$EXTRA_INC" >> "$GITHUB_ENV"
+
+      - name: Configure Kernel
+        run: |
+          test -f "arch/arm64/configs/$DEFCONFIG" || { echo "::error::$DEFCONFIG bulunamadi"; ls arch/arm64/configs | head -50; exit 1; }
+          make "$DEFCONFIG"
+
+          # 4.14 non-GKI: KernelSU kprobes hook'una ihtiyac duyar
+          scripts/config --enable CONFIG_KSU
+          scripts/config --enable CONFIG_MODULES
+          scripts/config --enable CONFIG_KPROBES
+          scripts/config --enable CONFIG_HAVE_KPROBES
+          scripts/config --enable CONFIG_KPROBE_EVENTS
+          scripts/config --enable CONFIG_OVERLAY_FS
+          scripts/config --disable CONFIG_WERROR
+          scripts/config --disable CONFIG_IKHEADERS
+          make olddefconfig
+
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_HAVE_KPROBES|CONFIG_KPROBE_EVENTS" .config
+
+      - name: Build Kernel
+        run: |
+          export KCFLAGS="-w $EXTRA_INC"
+          set +e
+          make -k -j"$(nproc)" Image 2>&1 | tee build.log
+          set -e
+
+          if [ ! -f arch/arm64/boot/Image ]; then
+            echo "::error::Image uretilemedi. Ilk hatalar:"
+            grep -nE "error:|fatal error|\*\*\* \[" build.log | head -n 60
+            exit 1
+          fi
+          ls -lh arch/arm64/boot/Image
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 anykernel
+          cp arch/arm64/boot/Image anykernel/Image
+          cd anykernel
+          rm -rf .git .github README.md
+
+          sed -i 's/^kernel.string=.*/kernel.string=KernelSU-Next kernel for Galaxy A31/' anykernel.sh
+          sed -i 's/^device.name1=.*/device.name1=a31/' anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=a31nsxx/' anykernel.sh
+          sed -i 's/^device.name3=.*/device.name3=SM-A315F/' anykernel.sh
+          sed -i 's/^device.name4=.*/device.name4=/' anykernel.sh
+          sed -i 's/^device.name5=.*/device.name5=/' anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=/dev/block/by-name/boot;|' anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/' anykernel.sh
+
+          zip -r9 ../AnyKernel3-a31.zip * -x ".git*"
+
+      - name: Upload Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-a31
+          path: AnyKernel3-a31.zip
+          if-no-files-found: error
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
