@@ -53,10 +53,18 @@ jobs:
       - name: Integrate KernelSU-Next
         run: |
           rm -rf drivers/kernelsu
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next \
-            || curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+          # 4.14 icin 'legacy' dali sart. 'next'/'dev' dallari GKI (5.10+) icindir.
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
+
+          # setup.sh olmayan dal adinda sessizce varsayilan dalda kalir, bu yuzden dogrula
+          if [ -d drivers/kernelsu/hook ] || [ -d drivers/kernelsu/infra ]; then
+            echo "::error::Modern (GKI) KernelSU-Next dali cekildi, 'legacy' dali alinamadi"
+            ls drivers/kernelsu
+            exit 1
+          fi
+          ls drivers/kernelsu
 
           # setup.sh normalde bunlari kendisi ekler; eksikse biz ekleriz
           grep -q 'kernelsu/Kconfig' drivers/Kconfig \
