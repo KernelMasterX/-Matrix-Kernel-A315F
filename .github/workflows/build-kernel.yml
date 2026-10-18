@@ -1,4 +1,4 @@
-name: Build Kernel
+Name: Build Kernel
 
 on:
   push:
@@ -63,7 +63,6 @@ jobs:
       - name: Integrate KernelSU-Next
         run: |
           rm -rf drivers/kernelsu
-          # Protokol 5 / eski legacy kararlı sürüm etiketine sabitlendi
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.3.0
 
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
@@ -85,6 +84,14 @@ jobs:
             sed -i '0,/^#include/s//#include <linux\/kallsyms.h>\n#include/' "$D"
           fi
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | xargs -r sed -i 's|<linux/pgtable.h>|<asm/pgtable.h>|g'
+          
+          # syscall_fn_t eksikligi icin baslik dosyasina guvenli typedef ekleyelim
+          SH="drivers/kernelsu/hook/syscall_hook.h"
+          if [ -f "$SH" ] && ! grep -q "syscall_fn_t" "$SH"; then
+            sed -i '1i typedef long (*syscall_fn_t)(void);' "$SH"
+            echo "syscall_fn_t typedef eklendi"
+          fi
+
           grep -n "kallsyms.h" "$D" || true
 
       - name: Configure Kernel
@@ -121,7 +128,13 @@ jobs:
           MKP="make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE"
           $MKP prepare > prime.log 2>&1 || true
           $MKP drivers/kernelsu/ >> prime.log 2>&1 || true
-          grep -E "KSU_NEXT|KernelSU-Next" prime.log | head -20 || true
+          
+          # Eger path_umount fs/namespace.c icinde yoksa manuel olarak ekleyelim (Samsung 4.14 uyumu)
+          if ! grep -q "^int path_umount" fs/namespace.c; then
+            echo "path_umount fs/namespace.c icinde bulunamadi, manuel ekleniyor..."
+            echo -e "\nint path_umount(struct path *path, int flags)\n{\n\treturn do_umount(path, flags);\n}\n" >> fs/namespace.c
+          fi
+
           grep -q "^int path_umount" fs/namespace.c || { echo "::error::path_umount fs/namespace.c'ye eklenemedi"; tail -n 30 prime.log; exit 1; }
           echo "path_umount yamasi tamam"
 
