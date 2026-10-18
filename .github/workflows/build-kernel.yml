@@ -84,12 +84,23 @@ jobs:
             sed -i '0,/^#include/s//#include <linux\/kallsyms.h>\n#include/' "$D"
           fi
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | xargs -r sed -i 's|<linux/pgtable.h>|<asm/pgtable.h>|g'
-          
-          # syscall_fn_t eksikligi icin baslik dosyasina guvenli typedef ekleyelim
+
+          # __poll_t eksikligi icin 4.14 uyumlu typedef ekleyelim
+          FW="drivers/kernelsu/infra/file_wrapper.c"
+          if [ -f "$FW" ] && ! grep -q "__poll_t" "$FW"; then
+            sed -i '1i typedef unsigned int __poll_t;' "$FW"
+          fi
+
+          # REMAP_FILE_DEDUP eksikligi icin guvenli macro ekleyelim
+          if [ -f "$FW" ] && ! grep -q "REMAP_FILE_DEDUP" "$FW"; then
+            sed -i '/#include/a #ifndef REMAP_FILE_DEDUP\n#define REMAP_FILE_DEDUP 0\n#endif' "$FW"
+          fi
+
+          # syscall_fn_t tanimini v3.3.0 arm64 mimarisine gore duzeltelim
           SH="drivers/kernelsu/hook/syscall_hook.h"
-          if [ -f "$SH" ] && ! grep -q "syscall_fn_t" "$SH"; then
-            sed -i '1i typedef long (*syscall_fn_t)(void);' "$SH"
-            echo "syscall_fn_t typedef eklendi"
+          if [ -f "$SH" ]; then
+            sed -i '/typedef.*syscall_fn_t/d' "$SH"
+            sed -i '1i typedef long (*syscall_fn_t)(const struct pt_regs *);' "$SH"
           fi
 
           grep -n "kallsyms.h" "$D" || true
@@ -129,7 +140,6 @@ jobs:
           $MKP prepare > prime.log 2>&1 || true
           $MKP drivers/kernelsu/ >> prime.log 2>&1 || true
           
-          # Eger path_umount fs/namespace.c icinde yoksa manuel olarak ekleyelim (Samsung 4.14 uyumu)
           if ! grep -q "^int path_umount" fs/namespace.c; then
             echo "path_umount fs/namespace.c icinde bulunamadi, manuel ekleniyor..."
             echo -e "\nint path_umount(struct path *path, int flags)\n{\n\treturn do_umount(path, flags);\n}\n" >> fs/namespace.c
