@@ -59,12 +59,11 @@ jobs:
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
 
           # setup.sh olmayan dal adinda sessizce varsayilan dalda kalir, bu yuzden dogrula
-          if [ -d drivers/kernelsu/hook ] || [ -d drivers/kernelsu/infra ]; then
-            echo "::error::Modern (GKI) KernelSU-Next dali cekildi, 'legacy' dali alinamadi"
-            ls drivers/kernelsu
-            exit 1
-          fi
-          ls drivers/kernelsu
+          BR=$(git -C KernelSU-Next rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+          echo "KernelSU-Next dali: $BR"
+          [ "$BR" = "legacy" ] || { echo "::error::legacy dali alinamadi (HEAD=$BR)"; exit 1; }
+          git -C KernelSU-Next log -1 --oneline
+          ls drivers/kernelsu drivers/kernelsu/hook
 
           # setup.sh normalde bunlari kendisi ekler; eksikse biz ekleriz
           grep -q 'kernelsu/Kconfig' drivers/Kconfig \
