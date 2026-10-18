@@ -40,7 +40,8 @@ jobs:
           sudo apt-get install -y bc bison build-essential curl flex git zip cpio \
             libncurses5-dev libssl-dev libelf-dev zlib1g-dev lz4 xz-utils python3 \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
+            clang lld llvm
 
       - name: Fix old-kernel vs modern host toolchain
         run: |
@@ -58,14 +59,12 @@ jobs:
 
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
 
-          # setup.sh olmayan dal adinda sessizce varsayilan dalda kalir, bu yuzden dogrula
           BR=$(git -C KernelSU-Next rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
           echo "KernelSU-Next dali: $BR"
           [ "$BR" = "legacy" ] || { echo "::error::legacy dali alinamadi (HEAD=$BR)"; exit 1; }
           git -C KernelSU-Next log -1 --oneline
           ls drivers/kernelsu drivers/kernelsu/hook
 
-          # setup.sh normalde bunlari kendisi ekler; eksikse biz ekleriz
           grep -q 'kernelsu/Kconfig' drivers/Kconfig \
             || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q 'kernelsu' drivers/Makefile \
@@ -73,81 +72,86 @@ jobs:
 
       - name: Patch KernelSU-Next for 4.14
         run: |
-          F=drivers/kernelsu/feature/sucompat.c
-          if [ -f "$F" ]; then
-            # 4.14'te linux/pgtable.h yok, asm/pgtable.h var
-            sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$F"
-
-            # void* tablo -> fonksiyon pointer cast (regex genel, idempotent)
-            sed -i 's/ksu_syscall_table\[\([^]]*\)\](/((long (*)(const struct pt_regs *))ksu_syscall_table[\1])(/g' "$F"
+          # KSYM_NAME_LEN icin kallsyms.h eksik (supercall/dispatch.c)
+          D=drivers/kernelsu/supercall/dispatch.c
+          if [ -f "$D" ] && ! grep -q "linux/kallsyms.h" "$D"; then
+            sed -i '0,/^#include/s//#include <linux\/kallsyms.h>\n#include/' "$D"
           fi
-          grep -rn "linux/pgtable.h" drivers/kernelsu/ || echo "pgtable.h referansi kalmadi"
-          grep -n "ksu_syscall_table" "$F" || true
-
-      - name: Prepare missing MediaTek headers
-        run: |
-          mkdir -p drivers/misc/mediatek/video/mt6768/dispsys drivers/misc/mediatek/video/mt6768/videox \
-                   drivers/misc/mediatek/video/common/layering_rule_base/v1.1
-
-          # Gercek dosya baska yerde varsa dummy olusturma, yolunu include'a ekle
-          EXTRA_INC=""
-          for pair in "ddp_info.h:dispsys" "disp_lcm.h:videox"; do
-            h="${pair%%:*}"; d="${pair##*:}"
-            found=$(find drivers/misc/mediatek -name "$h" -size +0 -print -quit)
-            if [ -n "$found" ]; then
-              echo "Gercek $h bulundu: $found"
-              EXTRA_INC="$EXTRA_INC -I$PWD/$(dirname "$found")"
-            else
-              echo "$h yok, dummy olusturuluyor"
-              touch "drivers/misc/mediatek/video/mt6768/$d/$h"
-            fi
-          done
-
-          for d in drivers/devfreq \
-                   drivers/misc/mediatek/include \
-                   drivers/misc/mediatek/video/mt6768/videox \
-                   drivers/misc/mediatek/video/mt6768/dispsys \
-                   drivers/misc/mediatek/video/common/layering_rule_base/v1.1; do
-            [ -d "$d" ] && EXTRA_INC="$EXTRA_INC -I$PWD/$d"
-          done
-          echo "EXTRA_INC=$EXTRA_INC" >> "$GITHUB_ENV"
+          # 4.14'te linux/pgtable.h yok
+          grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | xargs -r sed -i 's|<linux/pgtable.h>|<asm/pgtable.h>|g'
+          grep -n "kallsyms.h" "$D" || true
 
       - name: Configure Kernel
         run: |
           test -f "arch/arm64/configs/$DEFCONFIG" || { echo "::error::$DEFCONFIG bulunamadi"; ls arch/arm64/configs | head -50; exit 1; }
-          make "$DEFCONFIG"
+          make O=out ARCH=arm64 CC=clang "$DEFCONFIG"
 
-          # 4.14 non-GKI: KernelSU kprobes hook'una ihtiyac duyar
-          scripts/config --enable CONFIG_KSU
-          scripts/config --enable CONFIG_MODULES
-          scripts/config --enable CONFIG_KPROBES
-          scripts/config --enable CONFIG_HAVE_KPROBES
-          scripts/config --enable CONFIG_KPROBE_EVENTS
-          scripts/config --enable CONFIG_OVERLAY_FS
-          scripts/config --disable CONFIG_WERROR
-          scripts/config --disable CONFIG_IKHEADERS
-          make olddefconfig
+          C="scripts/config --file out/.config"
+          # Samsung korumalari KernelSU ile derlenmez (#error veriyor)
+          for o in UH UH_RKP UH_LKMAUTH RKP RKP_CFP RKP_CFP_JOPP RKP_KDP RKP_NS KDP KDP_CRED KDP_NS KDP_TEST SECURITY_DEFEX; do
+            $C --disable CONFIG_$o
+          done
+          $C --enable CONFIG_KSU
+          $C --enable CONFIG_MODULES
+          $C --enable CONFIG_KPROBES
+          $C --enable CONFIG_HAVE_KPROBES
+          $C --enable CONFIG_KPROBE_EVENTS
+          $C --enable CONFIG_OVERLAY_FS
+          $C --disable CONFIG_WERROR
+          $C --disable CONFIG_IKHEADERS
+          make O=out ARCH=arm64 CC=clang olddefconfig
 
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_HAVE_KPROBES|CONFIG_KPROBE_EVENTS" .config
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_HAVE_KPROBES|CONFIG_KPROBE_EVENTS" out/.config
+          if grep -qE "^CONFIG_(UH|KDP|RKP)=y" out/.config; then
+            echo "::error::UH/KDP/RKP hala acik (baska bir config select ediyor olabilir)"
+            grep -E "^CONFIG_(UH|KDP|RKP)" out/.config
+            exit 1
+          fi
 
       - name: Build Kernel
         run: |
-          export KCFLAGS="-w $EXTRA_INC"
-          set +e
-          make -k -j"$(nproc)" Image 2>&1 | tee build.log
-          set -e
+          export KCFLAGS="-w"
+          MK="make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          IMG=out/arch/arm64/boot/Image
+          CPATH_LIST=""
 
-          if [ ! -f arch/arm64/boot/Image ]; then
-            echo "::error::Image uretilemedi. Ilk hatalar:"
-            grep -nE "error:|fatal error|\*\*\* \[" build.log | head -n 60
+          for round in 1 2 3 4; do
+            echo "===== Tur $round ====="
+            set +e
+            CPATH="${CPATH_LIST#:}" $MK -k -j"$(nproc)" Image 2>&1 | tee "build-$round.log"
+            set -e
+            [ -f "$IMG" ] && break
+
+            # Eksik header'lari agacta bul, CPATH ile ekle (komut satiri degismez, tam rebuild olmaz)
+            grep -ohE "'[^']+\.h' file not found" "build-$round.log" | sed -E "s/^'(.*)' file not found/\1/" | sort -u > missing.txt
+            [ -s missing.txt ] || break
+            new=0
+            while read -r h; do
+              mapfile -t hits < <(find drivers sound -path "*/$h" 2>/dev/null | head -n 4)
+              if [ "${#hits[@]}" -ge 1 ] && [ "${#hits[@]}" -le 3 ]; then
+                for p in "${hits[@]}"; do
+                  d="$PWD/${p%/$h}"
+                  case ":$CPATH_LIST:" in *":$d:"*) ;; *) CPATH_LIST="$CPATH_LIST:$d"; new=1; echo "include eklendi: $d ($h)";; esac
+                done
+              else
+                echo "atlandi: $h (${#hits[@]} aday)"
+              fi
+            done < missing.txt
+            [ "$new" = 1 ] || break
+          done
+          cat build-*.log > build.log
+
+          if [ ! -f "$IMG" ]; then
+            echo "::error::Image uretilemedi. Kalan hatalar:"
+            grep -hE "error:|fatal error" build-*.log | sort | uniq -c | sort -rn | head -n 40
             exit 1
           fi
-          ls -lh arch/arm64/boot/Image
+          ls -lh "$IMG"
 
       - name: Package with AnyKernel3
         run: |
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3 anykernel
-          cp arch/arm64/boot/Image anykernel/Image
+          cp out/arch/arm64/boot/Image anykernel/Image
           cd anykernel
           rm -rf .git .github README.md
 
