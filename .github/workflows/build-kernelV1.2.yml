@@ -3,8 +3,11 @@ name: Build Matrixx Kernel v1.2
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    paths:
+      - 'arch/arm64/configs/a31_defconfig'
+      - 'drivers/kernelsu/**'
+      - 'fs/susfs*'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 env:
