@@ -1,1 +1,189 @@
+name: Build Matrixx Kernel v1.2
 
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  CROSS_COMPILE: /opt/a64/bin/aarch64-linux-gnu-
+  CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+  DEFCONFIG: a31_defconfig
+  CLANG_BIN: ${{ github.workspace }}/toolchain/clang/host/linux-x86/clang-r383902/bin/clang
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential curl flex git zip cpio \
+            libncurses5-dev libssl-dev libelf-dev zlib1g-dev lz4 xz-utils python3 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+
+          sudo mkdir -p /opt/a64/bin
+          for t in as ld ld.bfd ld.gold ar nm strip objcopy objdump readelf elfedit ranlib gcc cpp; do
+            src="$(command -v aarch64-linux-gnu-$t || true)"
+            [ -n "$src" ] || continue
+            sudo ln -sf "$src" "/opt/a64/bin/aarch64-linux-gnu-$t"
+            case "$t" in gcc|cpp) ;; *) sudo ln -sf "$src" "/opt/a64/bin/$t";; esac
+          done
+
+      - name: Fix old-kernel vs modern host toolchain
+        run: |
+          for f in scripts/dtc/dtc-lexer.lex.c_shipped scripts/dtc/dtc-lexer.lex.c; do
+            [ -f "$f" ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' "$f"
+          done
+          exit 0
+
+      - name: Integrate KernelSU-Next & SUSFS
+        run: |
+          rm -rf drivers/kernelsu
+          KSU_REF=e3292239f3b8384cc52bdc6f23995d643271a7ce
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_REF"
+
+          test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
+
+          # SUSFS Entegrasyonu (Kernel 4.14 için)
+          git clone https://gitlab.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch || echo "SUSFS klonlandı"
+          if [ -d "susfs_patch" ]; then
+            cp -f susfs_patch/kernel_patches/fs/* fs/ 2>/dev/null || true
+            cp -rf susfs_patch/kernel_patches/include/* include/ 2>/dev/null || true
+            
+            if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
+              echo 'obj-y += susfs.o' >> fs/Makefile
+            fi
+            echo "SUSFS dosyaları ve Makefile entegrasyonu tamamlandı"
+          fi
+
+          grep -q 'kernelsu/Kconfig' drivers/Kconfig \
+            || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'kernelsu' drivers/Makefile \
+            || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+      - name: Patch KernelSU-Next & SUSFS for 4.14
+        run: |
+          D=drivers/kernelsu/supercall/dispatch.c
+          if [ -f "$D" ] && ! grep -q "linux/kallsyms.h" "$D"; then
+            sed -i '0,/^#include/s//#include <linux\/kallsyms.h>\n#include/' "$D"
+          fi
+          grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | xargs -r sed -i 's|<linux/pgtable.h>|<asm/pgtable.h>|g'
+
+      - name: Configure Kernel
+        run: |
+          test -x "$CLANG_BIN" || { echo "::error::Repo clang bulunamadi: $CLANG_BIN"; exit 1; }
+          make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE "$DEFCONFIG"
+
+          C="scripts/config --file out/.config"
+          for o in UH UH_RKP UH_LKMAUTH RKP RKP_CFP RKP_CFP_JOPP RKP_KDP RKP_NS KDP KDP_CRED KDP_NS KDP_TEST SECURITY_DEFEX; do
+            $C --disable CONFIG_$o
+          done
+          
+          $C --enable CONFIG_KSU
+          $C --enable CONFIG_KSU_SUSFS
+          $C --enable CONFIG_MODULES
+          $C --enable CONFIG_KPROBES
+          $C --enable CONFIG_HAVE_KPROBES
+          $C --enable CONFIG_KPROBE_EVENTS
+          $C --enable CONFIG_OVERLAY_FS
+          $C --disable CONFIG_WERROR
+          $C --disable CONFIG_IKHEADERS
+          $C --disable CONFIG_DEBUG_INFO
+          
+          make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE olddefconfig
+
+      - name: Prime KernelSU backports
+        run: |
+          MKP="make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE"
+          $MKP prepare > prime.log 2>&1 || true
+          $MKP drivers/kernelsu/ >> prime.log 2>&1 || true
+
+      - name: Build Matrixx Kernel v1.2 Image
+        run: |
+          export KCFLAGS="-w"
+          MK="make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          IMG=out/arch/arm64/boot/Image
+          CPATH_LIST=""
+
+          for round in 1 2 3 4; do
+            echo "===== Tur $round ====="
+            set +e
+            CPATH="${CPATH_LIST#:}" $MK -k -j"$(nproc)" Image 2>&1 \
+              | awk '/Unrecognized form/ { next } { print }' > "build-$round.log"
+            set -e
+            [ -f "$IMG" ] && break
+
+            grep -ohE "'[^']+\.h' file not found" "build-$round.log" | sed -E "s/^'(.*)' file not found/\1/" | sort -u > missing.txt
+            [ -s missing.txt ] || break
+            new=0
+            while read -r h; do
+              mapfile -t hits < <(find drivers sound -path "*/$h" 2>/dev/null | head -n 4)
+              if [ "${#hits[@]}" -ge 1 ] && [ "${#hits[@]}" -le 3 ]; then
+                for p in "${hits[@]}"; do
+                  d="$PWD/${p%/$h}"
+                  case ":$CPATH_LIST:" in *":$d:"*) ;; *) CPATH_LIST="$CPATH_LIST:$d"; new=1;; esac
+                done
+              fi
+            done < missing.txt
+            [ "$new" = 1 ] || break
+          done
+          cat build-*.log | gzip -9 > build.log.gz
+
+          if [ ! -f "$IMG" ]; then
+            echo "::error::Matrixx Image uretilemedi."
+            exit 1
+          fi
+          ls -lh "$IMG"
+
+      - name: Package with AnyKernel3 (Matrixx v1.2)
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 anykernel
+          cp out/arch/arm64/boot/Image anykernel/Image
+          cd anykernel
+          rm -rf .git .github README.md
+
+          sed -i 's/^kernel.string=.*/kernel.string=Matrixx Kernel v1.2 for Galaxy A31/' anykernel.sh
+          sed -i 's/^device.name1=.*/device.name1=a31/' anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=a31nsxx/' anykernel.sh
+          sed -i 's/^device.name3=.*/device.name3=SM-A315F/' anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=/dev/block/by-name/boot;|' anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/' anykernel.sh
+
+          zip -r9 ../Matrixx-Kernel-v1.2-A31.zip * -x ".git*"
+
+      - name: Upload Matrixx Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Matrixx-Kernel-v1.2-A31
+          path: Matrixx-Kernel-v1.2-A31.zip
+          if-no-files-found: error
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log.gz
+          if-no-files-found: ignore
