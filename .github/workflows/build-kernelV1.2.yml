@@ -1,8 +1,6 @@
 name: Build Matrixx Kernel v1.2
 
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 env:
