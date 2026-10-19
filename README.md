@@ -1,4 +1,4 @@
-# 🟢 Matrix Kernel for Samsung Galaxy A31 (SM-A315F)
+# 🟢 Matrixx Kernel for Samsung Galaxy A31 (SM-A315F)
 
 Custom Linux 4.14 kernel built for the **Samsung Galaxy A31** (MediaTek Helio P65), featuring native **KernelSU Next** integration and optimized for stability and performance.
 
