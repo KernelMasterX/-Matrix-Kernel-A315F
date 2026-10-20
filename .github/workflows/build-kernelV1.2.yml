@@ -1,4 +1,4 @@
-name: Build Matrixx Kernel v1.2
+name: Build Matrixx Kernel v1.2 SUSFS
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential curl flex git zip cpio \
-            libncurses5-dev libssl-dev libelf-dev zlib1g-dev lz4 xz-utils python3 \
+            libncurses5-dev libssl-dev libelf-dev zlib1g-dev lz4 xz-utils python3 patch \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
 
@@ -54,30 +54,41 @@ jobs:
           done
           exit 0
 
-      - name: Integrate KernelSU-Next & SUSFS
+      - name: Integrate KernelSU-Next & SUSFS (Corrected Hooks)
         run: |
+          # 1. KernelSU-Next Kurulumu
           rm -rf drivers/kernelsu
           KSU_REF=e3292239f3b8384cc52bdc6f23995d643271a7ce
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_REF"
-
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
 
-          # SUSFS Entegrasyonu (Kernel 4.14 için)
-          git clone https://gitlab.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch || echo "SUSFS klonlandı"
-          if [ -d "susfs_patch" ]; then
-            cp -f susfs_patch/kernel_patches/fs/* fs/ 2>/dev/null || true
-            cp -rf susfs_patch/kernel_patches/include/* include/ 2>/dev/null || true
-            
-            if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
-              echo 'obj-y += susfs.o' >> fs/Makefile
+          # 2. SUSFS 4.14 Reposunu Çekme ve Dosya Kopyalama
+          git clone https://gitlab.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch
+          
+          # SUSFS C ve Header Dosyalarını Doğru Konumlara Atma
+          cp -rf susfs_patch/kernel_patches/fs/susfs/ fs/
+          cp -rf susfs_patch/kernel_patches/include/linux/susfs.h include/linux/
+
+          # Kernel 4.14 FS Patch'lerini Uygulama (Gerekli kancalar için)
+          for p in susfs_patch/kernel_patches/50_add_susfs_in_kernel-4.14.patch; do
+            if [ -f "$p" ]; then
+              patch -p1 < "$p" || echo "Patch kısmi uygulandı veya uyarılı geçti"
             fi
-            echo "SUSFS dosyaları ve Makefile entegrasyonu tamamlandı"
+          done
+
+          # fs/Makefile Entegrasyonu
+          if ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile; then
+            echo 'obj-$(CONFIG_KSU_SUSFS) += susfs/' >> fs/Makefile
           fi
 
-          grep -q 'kernelsu/Kconfig' drivers/Kconfig \
-            || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          grep -q 'kernelsu' drivers/Makefile \
-            || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          # fs/Kconfig Entegrasyonu
+          if ! grep -q "susfs/Kconfig" fs/Kconfig; then
+            sed -i '/endmenu/i source "fs/susfs/Kconfig"' fs/Kconfig
+          fi
+
+          # Drivers Kconfig ve Makefile Entegrasyonu
+          grep -q 'kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'kernelsu' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 
       - name: Patch KernelSU-Next & SUSFS for 4.14
         run: |
@@ -97,8 +108,14 @@ jobs:
             $C --disable CONFIG_$o
           done
           
+          # Root & SUSFS Ayarlarını Kesin Olarak Aktif Etme
           $C --enable CONFIG_KSU
           $C --enable CONFIG_KSU_SUSFS
+          $C --enable CONFIG_KSU_SUSFS_SUS_PATH
+          $C --enable CONFIG_KSU_SUSFS_SUS_MOUNT
+          $C --enable CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSUM
+          $C --enable CONFIG_KSU_SUSFS_SUS_SU
+          
           $C --enable CONFIG_MODULES
           $C --enable CONFIG_KPROBES
           $C --enable CONFIG_HAVE_KPROBES
@@ -116,7 +133,7 @@ jobs:
           $MKP prepare > prime.log 2>&1 || true
           $MKP drivers/kernelsu/ >> prime.log 2>&1 || true
 
-      - name: Build Matrixx Kernel v1.2 Image
+      - name: Build Matrixx Kernel v1.2.1 Image
         run: |
           export KCFLAGS="-w"
           MK="make O=out ARCH=arm64 CC=$CLANG_BIN CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
@@ -153,27 +170,27 @@ jobs:
           fi
           ls -lh "$IMG"
 
-      - name: Package with AnyKernel3 (Matrixx v1.2)
+      - name: Package with AnyKernel3 (Matrixx v1.2.1)
         run: |
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3 anykernel
           cp out/arch/arm64/boot/Image anykernel/Image
           cd anykernel
           rm -rf .git .github README.md
 
-          sed -i 's/^kernel.string=.*/kernel.string=Matrixx Kernel v1.2 for Galaxy A31/' anykernel.sh
+          sed -i 's/^kernel.string=.*/kernel.string=Matrixx Kernel v1.2.1 for Galaxy A31/' anykernel.sh
           sed -i 's/^device.name1=.*/device.name1=a31/' anykernel.sh
           sed -i 's/^device.name2=.*/device.name2=a31nsxx/' anykernel.sh
           sed -i 's/^device.name3=.*/device.name3=SM-A315F/' anykernel.sh
           sed -i 's|^BLOCK=.*|BLOCK=/dev/block/by-name/boot;|' anykernel.sh
           sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/' anykernel.sh
 
-          zip -r9 ../Matrixx-Kernel-v1.2-A31.zip * -x ".git*"
+          zip -r9 ../Matrixx-Kernel-v1.2.1-A31.zip * -x ".git*"
 
       - name: Upload Matrixx Kernel Zip
         uses: actions/upload-artifact@v4
         with:
-          name: Matrixx-Kernel-v1.2-A31
-          path: Matrixx-Kernel-v1.2-A31.zip
+          name: Matrixx-Kernel-v1.2.1-A31
+          path: Matrixx-Kernel-v1.2.1-A31.zip
           if-no-files-found: error
 
       - name: Upload Build Log
