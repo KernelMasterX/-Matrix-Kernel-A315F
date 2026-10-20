@@ -203,8 +203,8 @@ jobs:
       - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel3-a31
-          path: AnyKernel3-a31.zip
+          name: matrixx-kernel-a315f
+          path: matrixx-kernel-a315f.zip
           if-no-files-found: error
 
       - name: Upload Build Log
