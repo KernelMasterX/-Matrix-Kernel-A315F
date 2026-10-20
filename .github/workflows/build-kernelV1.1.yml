@@ -198,7 +198,7 @@ jobs:
           sed -i 's|^BLOCK=.*|BLOCK=/dev/block/by-name/boot;|' anykernel.sh
           sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/' anykernel.sh
 
-          zip -r9 ../AnyKernel3-a31.zip * -x ".git*"
+          zip -r9 ../matrixx-kernel-a315f.zip * -x ".git*"
 
       - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
