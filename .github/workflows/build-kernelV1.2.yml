@@ -62,8 +62,10 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_REF"
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
 
-          # 2. SUSFS 4.14 Reposunu Çekme ve Dosya Kopyalama
-          git clone https://gitlab.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch
+                    # 2. SUSFS 4.14 Reposunu Doğru Protokolle Çekme
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch || \
+          git clone --depth=1 https://github.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch
+
           
           # SUSFS C ve Header Dosyalarını Doğru Konumlara Atma
           cp -rf susfs_patch/kernel_patches/fs/susfs/ fs/
