@@ -1,4 +1,4 @@
-name: Build Matrixx Kernel v1.2 SUSFS
+name: Build Matrixx Kernel v1.2 (SUSFS Fix)
 
 on:
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
           done
           exit 0
 
-      - name: Integrate KernelSU-Next & SUSFS (Corrected Hooks)
+      - name: Integrate KernelSU-Next & SUSFS (Archive Extraction)
         run: |
           # 1. KernelSU-Next Kurulumu
           rm -rf drivers/kernelsu
@@ -62,30 +62,29 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_REF"
           test -e drivers/kernelsu || { echo "::error::KernelSU-Next entegrasyonu basarisiz"; exit 1; }
 
-                    # 2. SUSFS 4.14 Reposunu Doğru Protokolle Çekme
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch || \
-          git clone --depth=1 https://github.com/simonpunk/susfs4k.git -b kernel-4.14 susfs_patch
-
+          # 2. SUSFS 4.14 Arşivini Doğrudan İndirme ve Açma (Auth Duvarı Olmadan)
+          rm -rf susfs_patch susfs.tar.gz
+          curl -L "https://gitlab.com/simonpunk/susfs4k/-/archive/kernel-4.14/susfs4k-kernel-4.14.tar.gz" -o susfs.tar.gz || \
+          curl -L "https://github.com/simonpunk/susfs4k/archive/refs/heads/kernel-4.14.tar.gz" -o susfs.tar.gz
           
-          # SUSFS C ve Header Dosyalarını Doğru Konumlara Atma
-          cp -rf susfs_patch/kernel_patches/fs/susfs/ fs/
-          cp -rf susfs_patch/kernel_patches/include/linux/susfs.h include/linux/
+          mkdir -p susfs_patch
+          tar -xzf susfs.tar.gz -C susfs_patch --strip-components=1 || unzip -q susfs.tar.gz -d susfs_patch
+          
+          if [ -d "susfs_patch" ]; then
+            cp -rf susfs_patch/kernel_patches/fs/susfs/ fs/
+            cp -rf susfs_patch/kernel_patches/include/linux/susfs.h include/linux/
 
-          # Kernel 4.14 FS Patch'lerini Uygulama (Gerekli kancalar için)
-          for p in susfs_patch/kernel_patches/50_add_susfs_in_kernel-4.14.patch; do
-            if [ -f "$p" ]; then
-              patch -p1 < "$p" || echo "Patch kısmi uygulandı veya uyarılı geçti"
+            for p in susfs_patch/kernel_patches/50_add_susfs_in_kernel-4.14.patch; do
+              [ -f "$p" ] && patch -p1 < "$p" || echo "Patch uygulandı/gecildi"
+            done
+
+            if ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile; then
+              echo 'obj-$(CONFIG_KSU_SUSFS) += susfs/' >> fs/Makefile
             fi
-          done
-
-          # fs/Makefile Entegrasyonu
-          if ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile; then
-            echo 'obj-$(CONFIG_KSU_SUSFS) += susfs/' >> fs/Makefile
-          fi
-
-          # fs/Kconfig Entegrasyonu
-          if ! grep -q "susfs/Kconfig" fs/Kconfig; then
-            sed -i '/endmenu/i source "fs/susfs/Kconfig"' fs/Kconfig
+            if ! grep -q "susfs/Kconfig" fs/Kconfig; then
+              sed -i '/endmenu/i source "fs/Kconfig"' fs/Kconfig || echo 'source "fs/susfs/Kconfig"' >> fs/Kconfig
+            fi
+            echo "SUSFS doğrudan arşivden entegrasyon tamamlandı"
           fi
 
           # Drivers Kconfig ve Makefile Entegrasyonu
